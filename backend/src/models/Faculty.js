@@ -24,6 +24,19 @@ const facultySchema = new mongoose.Schema(
       trim: true,
     },
 
+    username: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      sparse: true,
+    },
+
+    authUserId: {
+      type: String,
+      trim: true,
+      sparse: true,
+    },
+
     phone: {
       type: String,
       trim: true,

@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const Department = require("../models/Department");
 const Faculty = require("../models/Faculty");
 
@@ -11,7 +12,11 @@ const getDepartments = async () => {
 };
 
 const getDepartmentById = async (id) => {
-  return await Department.findById(id);
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    const dept = await Department.findById(id);
+    if (dept) return dept;
+  }
+  return await Department.findOne({ code: new RegExp(`^${id}$`, "i") });
 };
 
 const updateDepartment = async (id, data) => {

@@ -1,4 +1,5 @@
 
+const mongoose = require("mongoose");
 const Course = require("../models/Course");
 const Department = require("../models/Department");
 
@@ -17,7 +18,11 @@ const getCourses = async () => {
 };
 
 const getCourseById = async (id) => {
-  return await Course.findById(id).populate("department", "name code");
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    const course = await Course.findById(id).populate("department", "name code");
+    if (course) return course;
+  }
+  return await Course.findOne({ code: id }).populate("department", "name code");
 };
 
 const updateCourse = async (id, data) => {

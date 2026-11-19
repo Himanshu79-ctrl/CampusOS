@@ -6,6 +6,9 @@ const facultyController = require("../controllers/facultyController");
 // Create faculty
 router.post("/", facultyController.createFaculty);
 
+// Provision faculty account (for existing or unlinked faculty records)
+router.post("/:id/provision", facultyController.provisionFaculty);
+
 // Get all faculty
 router.get("/", facultyController.getFaculty);
 
