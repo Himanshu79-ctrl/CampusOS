@@ -17,18 +17,30 @@ from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load local .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / '.env')
+except ImportError:
+    pass
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure--j%^rj8y0(iyh1!%+^k#n4d2=#+rjto!tg63dq5r4jv*idvf@@')
-DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1', 't', 'yes')
-ALLOWED_HOSTS = [
-    h.strip()
-    for h in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,172.16.223.188,[::1]').split(',')
-    if h.strip()
-]
+DEBUG = os.getenv('DEBUG', 'True' if not os.getenv('RENDER') else 'False').lower() in ('true', '1', 't', 'yes')
+
+allowed_hosts_env = os.getenv('ALLOWED_HOSTS')
+if allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in allowed_hosts_env.split(',') if h.strip()]
+else:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '172.16.223.188', '[::1]']
+
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+if RENDER_EXTERNAL_HOSTNAME and RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
 
 # Application definition
@@ -85,13 +97,54 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
+# PostgreSQL support for production/Render with SQLite fallback for local development
+DATABASE_URL = os.getenv('DATABASE_URL')
+DB_NAME = os.getenv('DB_NAME')
+DB_HOST = os.getenv('DB_HOST')
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+if DATABASE_URL or (DB_NAME and DB_HOST) or os.getenv('DB_ENGINE', '').endswith('postgresql'):
+    if DATABASE_URL:
+        from urllib.parse import urlparse, unquote
+        url = urlparse(DATABASE_URL)
+        db_name = url.path.lstrip('/')
+        db_user = unquote(url.username or '')
+        db_password = unquote(url.password or '')
+        db_host = url.hostname or ''
+        db_port = str(url.port or '5432')
+    else:
+        db_name = DB_NAME or 'campusos_auth'
+        db_user = os.getenv('DB_USER', 'postgres')
+        db_password = os.getenv('DB_PASSWORD', '')
+        db_host = DB_HOST or '127.0.0.1'
+        db_port = os.getenv('DB_PORT', '5432')
+
+    db_options = {
+        'connect_timeout': int(os.getenv('DB_CONNECT_TIMEOUT', '10')),
     }
-}
+    db_sslmode = os.getenv('DB_SSLMODE')
+    if db_sslmode:
+        db_options['sslmode'] = db_sslmode
+    elif not DEBUG and db_host not in ('127.0.0.1', 'localhost'):
+        db_options['sslmode'] = 'require'
+
+    DATABASES = {
+        'default': {
+            'ENGINE': os.getenv('DB_ENGINE', 'django.db.backends.postgresql'),
+            'NAME': db_name,
+            'USER': db_user,
+            'PASSWORD': db_password,
+            'HOST': db_host,
+            'PORT': db_port,
+            'OPTIONS': db_options,
+        }
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -128,7 +181,25 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# WhiteNoise production static file serving if available
+try:
+    import whitenoise  # noqa: F401
+    if 'whitenoise.middleware.WhiteNoiseMiddleware' not in MIDDLEWARE:
+        sec_idx = MIDDLEWARE.index('django.middleware.security.SecurityMiddleware')
+        MIDDLEWARE.insert(sec_idx + 1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
+except ImportError:
+    pass
 
 
 # Email
@@ -157,24 +228,39 @@ REST_FRAMEWORK = {
     ),
 }
 
+# JWT Configuration
+# JWT_SECRET_KEY matches LMS service shared secret for mutual verification
+JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', SECRET_KEY)
+JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
+ACCESS_TOKEN_LIFETIME_MINUTES = int(os.getenv('ACCESS_TOKEN_LIFETIME_MINUTES', '60'))
+REFRESH_TOKEN_LIFETIME_DAYS = int(os.getenv('REFRESH_TOKEN_LIFETIME_DAYS', '7'))
+
 # Simple JWT Settings
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=ACCESS_TOKEN_LIFETIME_MINUTES),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=REFRESH_TOKEN_LIFETIME_DAYS),
+    'SIGNING_KEY': JWT_SECRET_KEY,
+    'ALGORITHM': JWT_ALGORITHM,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # -------------------------------------------------------------------
 # CORS Configuration
 # -------------------------------------------------------------------
-CORS_ALLOWED_ORIGINS = [
-    o.strip()
-    for o in os.getenv(
-        'CORS_ALLOWED_ORIGINS',
-        'http://172.16.223.188:3000,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173'
-    ).split(',')
-    if o.strip()
-]
+cors_env = os.getenv('CORS_ALLOWED_ORIGINS')
+if cors_env:
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in cors_env.split(',') if o.strip()]
+else:
+    CORS_ALLOWED_ORIGINS = [
+        'http://172.16.223.188:3000',
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+    ]
+
+if os.getenv('CORS_ALLOW_ALL_ORIGINS', 'False').lower() in ('true', '1', 't', 'yes'):
+    CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOW_METHODS = [
     'DELETE',
