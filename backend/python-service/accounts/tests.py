@@ -5,10 +5,14 @@ Automated unit tests for CampusOS Auth Service, including the bootstrap_superadm
 import os
 from io import StringIO
 from unittest.mock import patch
+import jwt
 
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIClient
 
 from accounts.models import CustomUser
 
@@ -169,3 +173,160 @@ class BootstrapSuperAdminCommandTests(TestCase):
         self.assertEqual(student_user.role, "student")
         self.assertFalse(student_user.is_superuser)
         self.assertFalse(student_user.is_staff)
+
+
+class JWTRoleClaimTests(TestCase):
+    """
+    Test suite verifying that SimpleJWT tokens issued by Auth service
+    embed the user's role claim in both access and refresh tokens,
+    without unnecessary extra claims, across all user roles.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.password = "ValidCampusPass123!"
+        self.jwt_secret = getattr(settings, "JWT_SECRET_KEY", settings.SECRET_KEY)
+        self.jwt_algorithm = getattr(settings, "JWT_ALGORITHM", "HS256")
+
+    def _decode_token(self, token_str: str) -> dict:
+        return jwt.decode(
+            token_str,
+            self.jwt_secret,
+            algorithms=[self.jwt_algorithm],
+            options={"verify_exp": False},
+        )
+
+    def test_superadmin_login_token_contains_role(self):
+        """Super Admin login must return access and refresh tokens with role='super_admin'."""
+        CustomUser.objects.create_user(
+            username="test_superadmin",
+            email="superadmin@campusos.edu",
+            password=self.password,
+            role="super_admin",
+        )
+        response = self.client.post(
+            "/api/token/",
+            {"username": "test_superadmin", "password": self.password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("refresh", data)
+
+        access_payload = self._decode_token(data["access"])
+        refresh_payload = self._decode_token(data["refresh"])
+
+        self.assertEqual(access_payload.get("role"), "super_admin")
+        self.assertEqual(refresh_payload.get("role"), "super_admin")
+
+        # Verify no unnecessary claims added
+        self.assertNotIn("email", access_payload)
+        self.assertNotIn("username", access_payload)
+        self.assertNotIn("full_name", access_payload)
+
+    def test_admin_login_token_contains_role(self):
+        """Admin login must return tokens with role='admin'."""
+        CustomUser.objects.create_user(
+            username="test_admin",
+            email="admin@campusos.edu",
+            password=self.password,
+            role="admin",
+        )
+        response = self.client.post(
+            "/api/token/",
+            {"username": "test_admin", "password": self.password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+
+        access_payload = self._decode_token(data["access"])
+        refresh_payload = self._decode_token(data["refresh"])
+
+        self.assertEqual(access_payload.get("role"), "admin")
+        self.assertEqual(refresh_payload.get("role"), "admin")
+
+    def test_student_login_token_contains_role(self):
+        """Student login must return tokens with role='student'."""
+        CustomUser.objects.create_user(
+            username="test_student",
+            email="student@campusos.edu",
+            password=self.password,
+            role="student",
+        )
+        response = self.client.post(
+            "/api/token/",
+            {"username": "test_student", "password": self.password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+
+        access_payload = self._decode_token(data["access"])
+        refresh_payload = self._decode_token(data["refresh"])
+
+        self.assertEqual(access_payload.get("role"), "student")
+        self.assertEqual(refresh_payload.get("role"), "student")
+
+    def test_faculty_login_token_contains_role(self):
+        """Faculty login must return tokens with role='faculty'."""
+        CustomUser.objects.create_user(
+            username="test_faculty",
+            email="faculty@campusos.edu",
+            password=self.password,
+            role="faculty",
+        )
+        response = self.client.post(
+            "/api/token/",
+            {"username": "test_faculty", "password": self.password},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+
+        access_payload = self._decode_token(data["access"])
+        refresh_payload = self._decode_token(data["refresh"])
+
+        self.assertEqual(access_payload.get("role"), "faculty")
+        self.assertEqual(refresh_payload.get("role"), "faculty")
+
+    def test_token_refresh_endpoint_preserves_role(self):
+        """Refreshing an access token through /api/token/refresh/ must preserve the role claim."""
+        CustomUser.objects.create_user(
+            username="test_refresh_user",
+            email="refresh@campusos.edu",
+            password=self.password,
+            role="super_admin",
+        )
+        login_resp = self.client.post(
+            "/api/token/",
+            {"username": "test_refresh_user", "password": self.password},
+            format="json",
+        )
+        refresh_token = login_resp.json()["refresh"]
+
+        refresh_resp = self.client.post(
+            "/api/token/refresh/",
+            {"refresh": refresh_token},
+            format="json",
+        )
+        self.assertEqual(refresh_resp.status_code, status.HTTP_200_OK)
+        new_access = refresh_resp.json()["access"]
+
+        new_access_payload = self._decode_token(new_access)
+        self.assertEqual(new_access_payload.get("role"), "super_admin")
+
+    def test_invalid_credentials_rejected(self):
+        """Invalid credentials must return 401 Unauthorized."""
+        CustomUser.objects.create_user(
+            username="test_auth_fail",
+            password=self.password,
+            role="student",
+        )
+        response = self.client.post(
+            "/api/token/",
+            {"username": "test_auth_fail", "password": "WrongPassword!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
