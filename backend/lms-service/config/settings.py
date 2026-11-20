@@ -24,6 +24,9 @@ ALLOWED_HOSTS = [
     for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver").split(",")
     if host.strip()
 ]
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+if RENDER_EXTERNAL_HOSTNAME and RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
 
 # Application definition
 INSTALLED_APPS = [
@@ -182,13 +185,23 @@ SIMPLE_JWT = {
 ADMIN_SERVICE_URL = os.getenv("ADMIN_SERVICE_URL", "http://127.0.0.1:5000")
 
 # CORS Configuration
-CORS_ALLOWED_ORIGINS = [
-    "http://172.16.223.188:3000",
+default_cors_origins = [
+    "https://campus-os-ashy-ten.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://172.16.223.188:3000",
 ]
+
+env_cors = os.getenv("CORS_ALLOWED_ORIGINS")
+if env_cors:
+    extra_origins = [o.strip() for o in env_cors.split(",") if o.strip()]
+    CORS_ALLOWED_ORIGINS = list(dict.fromkeys(default_cors_origins + extra_origins))
+else:
+    CORS_ALLOWED_ORIGINS = default_cors_origins
+
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = [
     "DELETE",
