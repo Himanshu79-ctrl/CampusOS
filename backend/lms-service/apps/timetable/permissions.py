@@ -4,6 +4,7 @@ Enforces instructor course ownership, student enrollment boundaries, and IDOR pr
 """
 
 from rest_framework import permissions
+from apps.academics.faculty_matcher import is_faculty_assigned
 from apps.academics.models import Enrollment, EnrollmentStatus
 from apps.students.models import StudentProfile
 
@@ -25,21 +26,19 @@ class IsTimetableInstructorOrAdmin(permissions.BasePermission):
 
         if getattr(request.user, "is_faculty", False):
             faculty_id = self._extract_faculty_id(obj)
-            return faculty_id == str(request.user.user_id)
+            return bool(faculty_id and is_faculty_assigned(request.user, faculty_id))
 
         return False
 
     @staticmethod
     def _extract_faculty_id(obj) -> str:
-        # CourseOffering
-        if hasattr(obj, "faculty_id"):
-            return str(obj.faculty_id)
-        # TimetableEntry
-        if hasattr(obj, "course_offering") and hasattr(obj.course_offering, "faculty_id"):
-            return str(obj.faculty_id or obj.course_offering.faculty_id)
-        # CalendarEvent
+        # If object is associated with a CourseOffering (TimetableEntry, CalendarEvent),
+        # ALWAYS extract the authoritative assigned instructor from the CourseOffering.
         if hasattr(obj, "course_offering") and obj.course_offering:
-            return str(obj.course_offering.faculty_id)
+            return str(getattr(obj.course_offering, "faculty_id", "") or "")
+        # CourseOffering itself
+        if hasattr(obj, "faculty_id"):
+            return str(obj.faculty_id or "")
         return ""
 
 
@@ -59,7 +58,7 @@ class CanViewTimetableEntry(permissions.BasePermission):
             return True
 
         faculty_id = IsTimetableInstructorOrAdmin._extract_faculty_id(obj)
-        if getattr(request.user, "is_faculty", False) and faculty_id == str(request.user.user_id):
+        if getattr(request.user, "is_faculty", False) and faculty_id and is_faculty_assigned(request.user, faculty_id):
             return True
 
         if request.method not in permissions.SAFE_METHODS:

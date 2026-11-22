@@ -67,13 +67,13 @@ export const App = () => {
 
           {/* =========================================================================
               1. Admin Routes (/admin/*)
-              Allowed: admin, super_admin
+              Allowed: admin only
              ========================================================================= */}
           <Route
             path="/admin"
             element={
               <ProtectedRoute>
-                <RoleBasedRoute allowedRoles={[USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN]}>
+                <RoleBasedRoute allowedRoles={[USER_ROLES.ADMIN]}>
                   <DashboardLayout
                     role="admin"
                     roleLabel="Administrator Portal"
@@ -97,13 +97,13 @@ export const App = () => {
 
           {/* =========================================================================
               2. Faculty Routes (/faculty/*)
-              Allowed: faculty, super_admin
+              Allowed: faculty only
              ========================================================================= */}
           <Route
             path="/faculty"
             element={
               <ProtectedRoute>
-                <RoleBasedRoute allowedRoles={[USER_ROLES.FACULTY, USER_ROLES.SUPER_ADMIN]}>
+                <RoleBasedRoute allowedRoles={[USER_ROLES.FACULTY]}>
                   <DashboardLayout
                     role="faculty"
                     roleLabel="Faculty Portal"
@@ -126,13 +126,13 @@ export const App = () => {
 
           {/* =========================================================================
               3. Student Routes (/student/*)
-              Allowed: student, super_admin
+              Allowed: student only
              ========================================================================= */}
           <Route
             path="/student"
             element={
               <ProtectedRoute>
-                <RoleBasedRoute allowedRoles={[USER_ROLES.STUDENT, USER_ROLES.SUPER_ADMIN]}>
+                <RoleBasedRoute allowedRoles={[USER_ROLES.STUDENT]}>
                   <DashboardLayout
                     role="student"
                     roleLabel="Student Learning Space"

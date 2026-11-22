@@ -2,13 +2,19 @@ import axios from "axios";
 import { tokenStorage } from "./tokenStorage.js";
 
 /**
- * Backend Microservices Base URLs
- * Configured separately via environment variables.
+ * Backend Microservices Base URLs & Timeout Configuration
+ * Configured per service to accommodate Render free-instance cold starts (15-30s).
  */
 export const API_CONFIG = {
   lms: (typeof import.meta !== "undefined" && import.meta.env?.VITE_LMS_API_URL) || "http://127.0.0.1:8000",
   auth: (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTH_API_URL) || "http://127.0.0.1:8001",
   admin: (typeof import.meta !== "undefined" && import.meta.env?.VITE_ADMIN_API_URL) || "http://127.0.0.1:5000",
+};
+
+export const API_TIMEOUTS = {
+  auth: 45000, // 45 seconds: Auth Service (accounts, JWT login, token refresh, password setup)
+  lms: 30000,  // 30 seconds: LMS Service (academics, courses, timetable, gradebook)
+  admin: 30000, // 30 seconds: Admin Service (departments, courses, faculty catalog)
 };
 
 /**
@@ -20,7 +26,7 @@ export const lmsClient = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
-  timeout: 10000,
+  timeout: API_TIMEOUTS.lms,
 });
 
 /**
@@ -32,7 +38,7 @@ export const authClient = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
-  timeout: 10000,
+  timeout: API_TIMEOUTS.auth,
 });
 
 /**
@@ -44,7 +50,7 @@ export const adminClient = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
-  timeout: 10000,
+  timeout: API_TIMEOUTS.admin,
 });
 
 // Flag and queue to manage concurrent token refresh attempts
@@ -129,7 +135,10 @@ const configureAuthInterceptors = (client) => {
         const refreshResponse = await axios.post(
           `${API_CONFIG.auth}/api/token/refresh/`,
           { refresh: refreshToken },
-          { headers: { "Content-Type": "application/json" } }
+          {
+            headers: { "Content-Type": "application/json" },
+            timeout: API_TIMEOUTS.auth,
+          }
         );
 
         const newAccessToken = refreshResponse.data.access;

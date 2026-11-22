@@ -14,6 +14,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.academics.faculty_matcher import is_faculty_assigned
 from apps.academics.models import AcademicTerm, CourseOffering, Enrollment, EnrollmentStatus
 from apps.students.models import StudentProfile
 from .models import CalendarEvent, TimetableEntry
@@ -48,7 +49,7 @@ class CourseOfferingTimetableView(APIView):
             ).exists():
                 raise PermissionDenied("You must be actively enrolled in this course to view its timetable.")
         elif getattr(request.user, "is_faculty", False):
-            if str(offering.faculty_id) != str(request.user.user_id) and not getattr(request.user, "is_admin", False):
+            if not is_faculty_assigned(request.user, offering.faculty_id) and not getattr(request.user, "is_admin", False):
                 raise PermissionDenied("You are not the assigned instructor for this course offering.")
 
         entries = offering.timetable_entries.filter(is_active=True).order_by("day_of_week", "start_time")
@@ -182,12 +183,18 @@ class FacultyMyTimetableView(APIView):
     """
 
     def get(self, request):
-        target_faculty_id = str(request.user.user_id)
         param_faculty_id = request.query_params.get("faculty_id")
 
         if param_faculty_id and getattr(request.user, "is_admin", False):
             target_faculty_id = param_faculty_id
-        elif not getattr(request.user, "is_faculty", False) and not getattr(request.user, "is_admin", False):
+            user_arg = None
+        elif getattr(request.user, "is_faculty", False):
+            target_faculty_id = None
+            user_arg = request.user
+        elif getattr(request.user, "is_admin", False):
+            target_faculty_id = param_faculty_id
+            user_arg = None
+        else:
             raise PermissionDenied("Only faculty members or administrators can access faculty timetables.")
 
         term_id = request.query_params.get("term_id")
@@ -198,6 +205,7 @@ class FacultyMyTimetableView(APIView):
             faculty_id=target_faculty_id,
             term_id=term_id_val,
             day_of_week=day_of_week,
+            user=user_arg,
         )
         serializer = TimetableEntrySerializer(entries, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -296,6 +304,11 @@ class CalendarEventDetailView(APIView):
                     student=profile, course_offering=event.course_offering, status=EnrollmentStatus.ENROLLED
                 ).exists():
                     raise PermissionDenied("You must be enrolled in this course to view its calendar event.")
+        elif getattr(request.user, "is_faculty", False):
+            if event.course_offering and not is_faculty_assigned(request.user, event.course_offering.faculty_id):
+                raise PermissionDenied("You are not the assigned instructor for this course event.")
+            if not event.course_offering and not event.is_published and not getattr(request.user, "is_admin", False):
+                raise PermissionDenied("This calendar event is not published.")
 
         return Response(CalendarEventSerializer(event).data, status=status.HTTP_200_OK)
 

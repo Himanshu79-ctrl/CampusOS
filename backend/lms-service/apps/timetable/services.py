@@ -9,6 +9,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Q
 
+from apps.academics.faculty_matcher import is_faculty_assigned, get_faculty_identifiers_for_user
 from apps.academics.models import CourseOffering, Enrollment, EnrollmentStatus
 from apps.students.models import StudentProfile
 from .models import CalendarEvent, CalendarEventType, DayOfWeek, TimetableEntry
@@ -29,7 +30,7 @@ class TimetableService:
             return
 
         if getattr(user, "is_faculty", False):
-            if str(course_offering.faculty_id) == str(user.user_id):
+            if is_faculty_assigned(user, course_offering.faculty_id):
                 return
             raise PermissionDenied("You are not the assigned instructor for this course offering.")
 
@@ -73,19 +74,7 @@ class TimetableService:
                 }
             )
 
-        # 2. Faculty Conflict
-        faculty_conflict = overlapping_qs.filter(faculty_id=faculty_id).select_related("course_offering").first()
-        if faculty_conflict:
-            raise ValidationError(
-                {
-                    "faculty_id": (
-                        f"Faculty '{faculty_id}' is already scheduled for another class on {day_of_week} "
-                        f"between {faculty_conflict.start_time.strftime('%H:%M')} and {faculty_conflict.end_time.strftime('%H:%M')}."
-                    )
-                }
-            )
-
-        # 3. Section / Course Offering Conflict
+        # 2. Section / Course Offering Conflict
         offering_conflict = overlapping_qs.filter(course_offering=course_offering).first()
         if offering_conflict:
             raise ValidationError(
@@ -93,6 +82,24 @@ class TimetableService:
                     "course_offering": (
                         f"Course Offering #{course_offering.id} already has a class scheduled on {day_of_week} "
                         f"between {offering_conflict.start_time.strftime('%H:%M')} and {offering_conflict.end_time.strftime('%H:%M')}."
+                    )
+                }
+            )
+
+        # 3. Faculty Conflict
+        faculty_conflict = (
+            overlapping_qs.filter(
+                Q(faculty_id=faculty_id) | Q(course_offering__faculty_id=faculty_id)
+            )
+            .select_related("course_offering")
+            .first()
+        )
+        if faculty_conflict:
+            raise ValidationError(
+                {
+                    "faculty_id": (
+                        f"Faculty '{faculty_id}' is already scheduled for another class on {day_of_week} "
+                        f"between {faculty_conflict.start_time.strftime('%H:%M')} and {faculty_conflict.end_time.strftime('%H:%M')}."
                     )
                 }
             )
@@ -115,7 +122,11 @@ class TimetableService:
         """
         cls.check_faculty_or_admin_permission(user, course_offering)
 
-        eff_faculty_id = faculty_id or str(course_offering.faculty_id)
+        if getattr(user, "is_admin", False):
+            eff_faculty_id = str(faculty_id or course_offering.faculty_id)
+        else:
+            # Faculty cannot override the assigned course instructor
+            eff_faculty_id = str(course_offering.faculty_id)
 
         if end_time <= start_time:
             raise ValidationError({"end_time": "Class end time must be strictly after the start time."})
@@ -165,7 +176,12 @@ class TimetableService:
         eff_start = attrs.get("start_time", entry.start_time)
         eff_end = attrs.get("end_time", entry.end_time)
         eff_room = attrs.get("room", entry.room)
-        eff_faculty = attrs.get("faculty_id", entry.faculty_id)
+
+        if getattr(user, "is_admin", False):
+            eff_faculty = str(attrs.get("faculty_id", entry.faculty_id))
+        else:
+            eff_faculty = str(entry.course_offering.faculty_id)
+            attrs["faculty_id"] = eff_faculty
 
         if eff_end <= eff_start:
             raise ValidationError({"end_time": "Class end time must be strictly after the start time."})
@@ -230,17 +246,29 @@ class TimetableService:
     @classmethod
     def get_faculty_timetable(
         cls,
-        faculty_id: str,
+        faculty_id: str = None,
         term_id: int = None,
         day_of_week: str = None,
+        user=None,
     ):
         """
         Returns weekly teaching schedule for a faculty member.
         """
-        qs = TimetableEntry.objects.filter(
-            is_active=True,
-            faculty_id=faculty_id,
-        ).select_related("course_offering", "course_offering__academic_term")
+        if user and getattr(user, "is_faculty", False):
+            identifiers = get_faculty_identifiers_for_user(user)
+            qs = TimetableEntry.objects.filter(
+                is_active=True,
+            ).filter(
+                Q(faculty_id__in=identifiers) | Q(course_offering__faculty_id__in=identifiers)
+            ).select_related("course_offering", "course_offering__academic_term")
+        elif faculty_id:
+            qs = TimetableEntry.objects.filter(
+                is_active=True,
+            ).filter(
+                Q(faculty_id=faculty_id) | Q(course_offering__faculty_id=faculty_id)
+            ).select_related("course_offering", "course_offering__academic_term")
+        else:
+            qs = TimetableEntry.objects.none()
 
         if term_id:
             qs = qs.filter(course_offering__academic_term_id=term_id)
@@ -329,11 +357,14 @@ class TimetableService:
                 qs = qs.none()
 
         elif getattr(user, "is_faculty", False):
+            identifiers = get_faculty_identifiers_for_user(user)
             qs = qs.filter(
-                Q(course_offering__isnull=True)
-                | Q(course_offering__faculty_id=str(user.user_id))
-                | Q(is_published=True)
+                (Q(course_offering__isnull=True) & Q(is_published=True))
+                | Q(course_offering__faculty_id__in=identifiers)
             )
+
+        elif not getattr(user, "is_admin", False):
+            qs = qs.filter(is_published=True, course_offering__isnull=True)
 
         if term_id:
             qs = qs.filter(academic_term_id=term_id)

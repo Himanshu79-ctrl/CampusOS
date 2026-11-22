@@ -1,16 +1,31 @@
 import React, { createContext, useState, useEffect, useCallback, useMemo } from "react";
 import { authService } from "@/services/authService";
 import { tokenStorage } from "@/services/tokenStorage";
+import { parseJwtClaims } from "@/types";
+
+export { parseJwtClaims };
 
 export const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(() => tokenStorage.getUser());
+  const [user, setUser] = useState(() => {
+    const cached = tokenStorage.getUser();
+    const token = tokenStorage.getAccessToken();
+    const claims = parseJwtClaims(token);
+    if (claims?.role) {
+      if (cached) {
+        return { ...cached, role: claims.role };
+      }
+      return { id: claims.user_id, role: claims.role };
+    }
+    return cached;
+  });
   const [accessToken, setAccessToken] = useState(() => tokenStorage.getAccessToken());
   const [isLoading, setIsLoading] = useState(true);
 
   const logout = useCallback(() => {
     authService.logout();
+    tokenStorage.clearAll();
     setUser(null);
     setAccessToken(null);
   }, []);
@@ -43,16 +58,40 @@ export const AuthProvider = ({ children }) => {
     async (username, password, rememberMe = true) => {
       setIsLoading(true);
       try {
+        // Crucial: Clear any lingering stale storage or previous user state before new login
+        tokenStorage.clearAll();
+
         // Step 1: Request JWT tokens
         const tokens = await authService.login({ username, password });
         const { access, refresh } = tokens;
 
-        // Step 2: Store tokens matching remember preference
+        // Step 2: Extract verified cryptographic role directly from JWT access token
+        const claims = parseJwtClaims(access);
+        const tokenRole = claims?.role;
+
+        // Step 3: Store tokens matching remember preference
         tokenStorage.setTokens(access, refresh, rememberMe);
         setAccessToken(access);
 
-        // Step 3: Fetch verified user profile with the new token
-        const profile = await authService.getProfile(access);
+        // Step 4: Fetch verified user profile with the new token
+        let profile;
+        try {
+          profile = await authService.getProfile(access);
+          if (tokenRole) {
+            profile.role = profile.role || tokenRole;
+          }
+        } catch (profileErr) {
+          if (tokenRole) {
+            profile = {
+              id: claims?.user_id,
+              username: username.trim(),
+              role: tokenRole,
+            };
+          } else {
+            throw profileErr;
+          }
+        }
+
         tokenStorage.setUser(profile, rememberMe);
         setUser(profile);
 
@@ -86,6 +125,10 @@ export const AuthProvider = ({ children }) => {
       try {
         // Attempt to fetch profile using current access token
         const profile = await authService.getProfile(storedToken);
+        const claims = parseJwtClaims(storedToken);
+        if (claims?.role) {
+          profile.role = profile.role || claims.role;
+        }
         if (isMounted) {
           setUser(profile);
           setAccessToken(storedToken);
@@ -100,6 +143,10 @@ export const AuthProvider = ({ children }) => {
             tokenStorage.setAccessToken(newAccessToken);
 
             const profile = await authService.getProfile(newAccessToken);
+            const claims = parseJwtClaims(newAccessToken);
+            if (claims?.role) {
+              profile.role = profile.role || claims.role;
+            }
             if (isMounted) {
               setAccessToken(newAccessToken);
               setUser(profile);
@@ -115,6 +162,10 @@ export const AuthProvider = ({ children }) => {
         } else if (!err.response) {
           // Network error: preserve cached user so temporary offline state doesn't wipe session
           const cachedUser = tokenStorage.getUser();
+          const claims = parseJwtClaims(storedToken);
+          if (claims?.role && cachedUser) {
+            cachedUser.role = claims.role;
+          }
           if (isMounted && cachedUser && storedToken) {
             setUser(cachedUser);
             setAccessToken(storedToken);

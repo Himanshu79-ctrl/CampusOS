@@ -6,6 +6,7 @@ Validates external IDs (course_id, faculty_id, department_id) against the Admin 
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from django.conf import settings
@@ -15,20 +16,43 @@ logger = logging.getLogger(__name__)
 # Standard MongoDB 24-hex-character ObjectId regex
 OBJECT_ID_REGEX = re.compile(r"^[0-9a-fA-F]{24}$")
 
+# In-memory cache for remote course & department catalog records from Admin service
+_CATALOG_CACHE = {
+    "courses_timestamp": 0,
+    "courses": [],
+    "departments_timestamp": 0,
+    "departments": [],
+}
+_CATALOG_CACHE_TTL = 60.0
+DEFAULT_ADMIN_SERVICE_TIMEOUT = 20.0
+
+
+def clear_catalog_cache():
+    """Resets the in-memory course and department catalog cache (useful for testing)."""
+    global _CATALOG_CACHE
+    _CATALOG_CACHE = {
+        "courses_timestamp": 0,
+        "courses": [],
+        "departments_timestamp": 0,
+        "departments": [],
+    }
+
 
 class AdminServiceClient:
     """
     HTTP client for validating external identifiers against the Express Admin backend.
     Endpoints:
+      - GET /api/admin/courses
       - GET /api/admin/courses/:id
       - GET /api/admin/faculty/:id
+      - GET /api/admin/departments
       - GET /api/admin/departments/:id
       - GET /api/admin/departments/:id/hod
     """
 
-    def __init__(self, base_url: str = None, timeout: float = 2.0):
+    def __init__(self, base_url: str = None, timeout: float = None):
         self.base_url = (base_url or getattr(settings, "ADMIN_SERVICE_URL", "http://127.0.0.1:5000")).rstrip("/")
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else getattr(settings, "ADMIN_SERVICE_TIMEOUT", DEFAULT_ADMIN_SERVICE_TIMEOUT)
 
     @staticmethod
     def is_valid_format(external_id: str) -> bool:
@@ -190,4 +214,113 @@ class AdminServiceClient:
 
         return user_email == hod_email
 
+    def get_courses(self) -> list[dict]:
+        """
+        Fetches all courses from Admin Service GET /api/admin/courses.
+        Cached for 60s. Fails gracefully to empty list if unreachable.
+        """
+        global _CATALOG_CACHE
+        now = time.time()
+        if (now - _CATALOG_CACHE["courses_timestamp"] < _CATALOG_CACHE_TTL) and _CATALOG_CACHE["courses"]:
+            return _CATALOG_CACHE["courses"]
+
+        try:
+            exists, payload = self._query_endpoint("/api/admin/courses")
+            if exists and payload is not None:
+                records = payload if isinstance(payload, list) else payload.get("data", [])
+                if isinstance(records, list) and records:
+                    _CATALOG_CACHE["courses"] = records
+                    _CATALOG_CACHE["courses_timestamp"] = now
+                    return records
+        except Exception as exc:
+            logger.warning("Could not fetch courses from Admin service: %s", exc)
+
+        return _CATALOG_CACHE.get("courses", [])
+
+    def get_course(self, course_id: str) -> dict | None:
+        """
+        Resolves course details for a given course_id (MongoDB ObjectId or course code).
+        Matches against cached courses first, then queries /api/admin/courses/:id.
+        """
+        if not course_id:
+            return None
+        target = str(course_id).strip()
+
+        # 1. Search in cached courses list
+        for c in self.get_courses():
+            if not isinstance(c, dict):
+                continue
+            if str(c.get("_id", "")).strip() == target:
+                return c
+            if str(c.get("code", "")).strip().upper() == target.upper():
+                return c
+
+        # 2. Query endpoint directly if not in cached list
+        try:
+            exists, payload = self._query_endpoint(f"/api/admin/courses/{target}")
+            if exists and isinstance(payload, dict):
+                course_data = payload.get("course", payload) if "course" in payload else payload
+                if isinstance(course_data, dict):
+                    return course_data
+        except Exception as exc:
+            logger.debug("Could not fetch course %s from Admin service: %s", target, exc)
+
+        return None
+
+    def get_departments(self) -> list[dict]:
+        """
+        Fetches all departments from Admin Service GET /api/admin/departments.
+        Cached for 60s. Fails gracefully to empty list if unreachable.
+        """
+        global _CATALOG_CACHE
+        now = time.time()
+        if (now - _CATALOG_CACHE["departments_timestamp"] < _CATALOG_CACHE_TTL) and _CATALOG_CACHE["departments"]:
+            return _CATALOG_CACHE["departments"]
+
+        try:
+            exists, payload = self._query_endpoint("/api/admin/departments")
+            if exists and payload is not None:
+                records = (
+                    payload.get("data", [])
+                    if isinstance(payload, dict)
+                    else (payload if isinstance(payload, list) else [])
+                )
+                if isinstance(records, list) and records:
+                    _CATALOG_CACHE["departments"] = records
+                    _CATALOG_CACHE["departments_timestamp"] = now
+                    return records
+        except Exception as exc:
+            logger.warning("Could not fetch departments from Admin service: %s", exc)
+
+        return _CATALOG_CACHE.get("departments", [])
+
+    def get_department(self, department_id: str) -> dict | None:
+        """
+        Resolves department details for a given department_id (MongoDB ObjectId or code).
+        Matches against cached departments first, then queries /api/admin/departments/:id.
+        """
+        if not department_id:
+            return None
+        target = str(department_id).strip()
+
+        # 1. Search in cached departments list
+        for d in self.get_departments():
+            if not isinstance(d, dict):
+                continue
+            if str(d.get("_id", "")).strip() == target:
+                return d
+            if str(d.get("code", "")).strip().upper() == target.upper():
+                return d
+
+        # 2. Query endpoint directly if not in cached list
+        try:
+            exists, payload = self._query_endpoint(f"/api/admin/departments/{target}")
+            if exists and isinstance(payload, dict):
+                dept_data = payload.get("data", payload)
+                if isinstance(dept_data, dict):
+                    return dept_data
+        except Exception as exc:
+            logger.debug("Could not fetch department %s from Admin service: %s", target, exc)
+
+        return None
 

@@ -56,7 +56,8 @@ class AcademicTermSerializer(serializers.ModelSerializer):
 
 class CourseOfferingSerializer(serializers.ModelSerializer):
     """
-    Serializer for CourseOffering with computed seat availability.
+    Serializer for CourseOffering with computed seat availability and decoded
+    course & department details resolved from Admin service master catalog.
     """
 
     academic_term_name = serializers.CharField(source="academic_term.name", read_only=True)
@@ -64,14 +65,22 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
     academic_year = serializers.CharField(source="academic_term.academic_year", read_only=True)
     enrolled_count = serializers.SerializerMethodField()
     available_seats = serializers.SerializerMethodField()
+    course_name = serializers.SerializerMethodField()
+    course_code = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
 
     class Meta:
         model = CourseOffering
         fields = [
             "id",
             "course_id",
+            "course_name",
+            "course_code",
             "faculty_id",
             "department_id",
+            "department_name",
+            "department_code",
             "academic_term",
             "academic_term_name",
             "academic_term_status",
@@ -84,7 +93,15 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "course_name",
+            "course_code",
+            "department_name",
+            "department_code",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_enrolled_count(self, obj) -> int:
         return obj.enrollments.filter(status=EnrollmentStatus.ENROLLED).count()
@@ -92,6 +109,50 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
     def get_available_seats(self, obj) -> int:
         enrolled = self.get_enrolled_count(obj)
         return max(0, obj.capacity - enrolled)
+
+    def get_course_name(self, obj) -> str:
+        from .admin_client import AdminServiceClient
+        client = AdminServiceClient()
+        course = client.get_course(obj.course_id)
+        if course and isinstance(course, dict):
+            return course.get("name", "")
+        return ""
+
+    def get_course_code(self, obj) -> str:
+        from .admin_client import AdminServiceClient
+        client = AdminServiceClient()
+        course = client.get_course(obj.course_id)
+        if course and isinstance(course, dict) and course.get("code"):
+            return course.get("code")
+        return obj.course_id
+
+    def get_department_name(self, obj) -> str:
+        from .admin_client import AdminServiceClient
+        client = AdminServiceClient()
+        # 1. Try resolving directly from department_id
+        dept = client.get_department(obj.department_id)
+        if dept and isinstance(dept, dict) and dept.get("name"):
+            return dept.get("name")
+        # 2. Try resolving via course.department if course is populated
+        course = client.get_course(obj.course_id)
+        if course and isinstance(course, dict):
+            c_dept = course.get("department")
+            if isinstance(c_dept, dict) and c_dept.get("name"):
+                return c_dept.get("name")
+        return ""
+
+    def get_department_code(self, obj) -> str:
+        from .admin_client import AdminServiceClient
+        client = AdminServiceClient()
+        dept = client.get_department(obj.department_id)
+        if dept and isinstance(dept, dict) and dept.get("code"):
+            return dept.get("code")
+        course = client.get_course(obj.course_id)
+        if course and isinstance(course, dict):
+            c_dept = course.get("department")
+            if isinstance(c_dept, dict) and c_dept.get("code"):
+                return c_dept.get("code")
+        return obj.department_id
 
     def validate_capacity(self, value):
         if value <= 0:
@@ -123,24 +184,21 @@ class CourseOfferingSerializer(serializers.ModelSerializer):
         return value.strip()
 
 
-class CourseOfferingListSerializer(serializers.ModelSerializer):
+class CourseOfferingListSerializer(CourseOfferingSerializer):
     """
     Lightweight list serializer for catalog course browsing.
     """
 
-    academic_term_name = serializers.CharField(source="academic_term.name", read_only=True)
-    academic_term_status = serializers.CharField(source="academic_term.status", read_only=True)
-    academic_year = serializers.CharField(source="academic_term.academic_year", read_only=True)
-    enrolled_count = serializers.SerializerMethodField()
-    available_seats = serializers.SerializerMethodField()
-
-    class Meta:
-        model = CourseOffering
+    class Meta(CourseOfferingSerializer.Meta):
         fields = [
             "id",
             "course_id",
+            "course_name",
+            "course_code",
             "faculty_id",
             "department_id",
+            "department_name",
+            "department_code",
             "academic_term",
             "academic_term_name",
             "academic_term_status",
@@ -151,12 +209,6 @@ class CourseOfferingListSerializer(serializers.ModelSerializer):
             "enrolled_count",
             "available_seats",
         ]
-
-    def get_enrolled_count(self, obj) -> int:
-        return obj.enrollments.filter(status=EnrollmentStatus.ENROLLED).count()
-
-    def get_available_seats(self, obj) -> int:
-        return max(0, obj.capacity - self.get_enrolled_count(obj))
 
 
 class EnrollmentSerializer(serializers.ModelSerializer):

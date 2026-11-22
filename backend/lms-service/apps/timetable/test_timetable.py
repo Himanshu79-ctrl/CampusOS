@@ -10,6 +10,7 @@ Implements SRS Section 3.E:
 """
 
 from datetime import date, time, timedelta
+from unittest.mock import patch
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework import status
@@ -530,4 +531,340 @@ class TimetableAPITests(TestCase):
         self.assertIn("University Annual Sports Day", titles)
         self.assertIn("Offering 1 Project Showcase", titles)
         self.assertNotIn("Offering 2 Lab Hackathon", titles)
+
+    # -------------------------------------------------------------------------
+    # 5. Faculty Cross-Service MongoDB ID Authorization Regression Tests
+    # -------------------------------------------------------------------------
+
+    @patch("apps.academics.faculty_matcher._get_admin_faculty_records")
+    def test_assigned_faculty_with_mongodb_object_id_creates_timetable_slot(self, mock_get_faculty):
+        """
+        Regression test: When a CourseOffering stores a MongoDB ObjectId faculty_id
+        ('6b001d4b79943f38bdcb47f2'), the authenticated faculty user with integer Auth
+        service user_id='2' (Dr. Anurag Sewak) is recognized via faculty_matcher and can
+        successfully create a timetable slot.
+        """
+        mock_get_faculty.return_value = [
+            {
+                "_id": "6b001d4b79943f38bdcb47f2",
+                "name": "Dr. Anurag Sewak",
+                "employeeId": "FAC-CSE-201",
+                "email": "anurag@campusos.edu",
+                "username": "dr_anurag",
+                "authUserId": "2",
+            }
+        ]
+
+        # Course offering with Dr. Anurag Sewak's MongoDB ObjectId
+        anurag_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113d",
+            faculty_id="6b001d4b79943f38bdcb47f2",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="A",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+
+        anurag_token = ExternalJWTAuthentication.generate_token(user_id="2", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {anurag_token}")
+
+        payload = {
+            "day_of_week": "MONDAY",
+            "start_time": "10:00:00",
+            "end_time": "11:30:00",
+            "room": "Room 402",
+            "building": "Academic Block 1",
+            "entry_type": "LECTURE",
+        }
+        res = self.client.post(f"/api/timetable/offerings/{anurag_offering.id}/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["day_of_week"], "MONDAY")
+        self.assertEqual(res.data["room"], "Room 402")
+        self.assertEqual(res.data["faculty_id"], "6b001d4b79943f38bdcb47f2")
+
+        # Verify faculty can retrieve this slot on their faculty timetable
+        res_tt = self.client.get("/api/timetable/faculty-timetable/")
+        self.assertEqual(res_tt.status_code, status.HTTP_200_OK)
+        slot_ids = [s["id"] for s in res_tt.data]
+        self.assertIn(res.data["id"], slot_ids)
+
+    @patch("apps.academics.faculty_matcher._get_admin_faculty_records")
+    def test_unassigned_faculty_cannot_create_timetable_slot_for_another_instructor(self, mock_get_faculty):
+        """
+        Regression test: An unassigned faculty member (Dr. Kalpana Singh, authUserId='17')
+        cannot create timetable slots for Dr. Anurag Sewak's course offering (returns 403 Forbidden).
+        """
+        mock_get_faculty.return_value = [
+            {
+                "_id": "6b001d4b79943f38bdcb47f2",
+                "name": "Dr. Anurag Sewak",
+                "employeeId": "FAC-CSE-201",
+                "email": "anurag@campusos.edu",
+                "username": "dr_anurag",
+                "authUserId": "2",
+            },
+            {
+                "_id": "6afc347ed9e74d0557163928",
+                "name": "Dr. Kalpana Singh",
+                "employeeId": "FAC-CSE-001",
+                "email": "kalpana@campusos.edu",
+                "username": "dr_kalpana",
+                "authUserId": "17",
+            },
+        ]
+
+        anurag_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113d",
+            faculty_id="6b001d4b79943f38bdcb47f2",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="A",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+
+        kalpana_token = ExternalJWTAuthentication.generate_token(user_id="17", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {kalpana_token}")
+
+        payload = {
+            "day_of_week": "MONDAY",
+            "start_time": "10:00:00",
+            "end_time": "11:30:00",
+            "room": "Room 402",
+        }
+        res = self.client.post(f"/api/timetable/offerings/{anurag_offering.id}/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertIn("Only the assigned instructor or an administrator", res.data.get("detail", ""))
+
+    @patch("apps.academics.faculty_matcher._get_admin_faculty_records")
+    def test_faculty_cannot_spoof_faculty_id_in_create_timetable_slot(self, mock_get_faculty):
+        """
+        Security test: A faculty member cannot override the assigned instructor
+        by supplying a spoofed faculty_id in the request payload.
+        """
+        mock_get_faculty.return_value = [
+            {
+                "_id": "6b001d4b79943f38bdcb47f2",
+                "name": "Dr. Anurag Sewak",
+                "employeeId": "FAC-CSE-201",
+                "email": "anurag@campusos.edu",
+                "username": "dr_anurag",
+                "authUserId": "2",
+            }
+        ]
+
+        anurag_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113d",
+            faculty_id="6b001d4b79943f38bdcb47f2",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="A",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+
+        anurag_token = ExternalJWTAuthentication.generate_token(user_id="2", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {anurag_token}")
+
+        payload = {
+            "day_of_week": "TUESDAY",
+            "start_time": "10:00:00",
+            "end_time": "11:30:00",
+            "room": "Room 402",
+            "faculty_id": "malicious_spoofed_fac_id",
+        }
+        res = self.client.post(f"/api/timetable/offerings/{anurag_offering.id}/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["faculty_id"], "6b001d4b79943f38bdcb47f2")
+        self.assertNotEqual(res.data["faculty_id"], "malicious_spoofed_fac_id")
+
+    def test_admin_can_explicitly_set_faculty_id_on_timetable_slot(self):
+        """
+        Legitimate admin test: An administrator can explicitly set or override
+        the faculty_id when creating a timetable slot.
+        """
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+
+        payload = {
+            "day_of_week": "WEDNESDAY",
+            "start_time": "14:00:00",
+            "end_time": "15:30:00",
+            "room": "Lab 201",
+            "faculty_id": "fac_custom_assigned",
+        }
+        res = self.client.post(f"/api/timetable/offerings/{self.offering1.id}/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["faculty_id"], "fac_custom_assigned")
+
+    @patch("apps.academics.faculty_matcher._get_admin_faculty_records")
+    def test_permission_checks_course_offering_assigned_faculty_not_overridden_entry_faculty(self, mock_get_faculty):
+        """
+        Security test: When TimetableEntry.faculty_id has an overridden value, authorization
+        still strictly validates against CourseOffering.faculty_id.
+        - An attacker matching the entry's faculty_id is denied access (403).
+        - The legitimate assigned instructor is granted access (200) and entry is sanitized.
+        """
+        mock_get_faculty.return_value = [
+            {
+                "_id": "6b001d4b79943f38bdcb47f2",
+                "name": "Dr. Anurag Sewak",
+                "employeeId": "FAC-CSE-201",
+                "email": "anurag@campusos.edu",
+                "username": "dr_anurag",
+                "authUserId": "2",
+            }
+        ]
+
+        anurag_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113d",
+            faculty_id="6b001d4b79943f38bdcb47f2",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="A",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+
+        entry = TimetableEntry.objects.create(
+            course_offering=anurag_offering,
+            faculty_id="attacker_fake_id",
+            day_of_week=DayOfWeek.MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 30),
+            room="Room 402",
+        )
+
+        # 1. Attacker matching entry.faculty_id attempts to edit
+        attacker_token = ExternalJWTAuthentication.generate_token(user_id="attacker_fake_id", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {attacker_token}")
+        res_attacker = self.client.patch(
+            f"/api/timetable/entries/{entry.id}/",
+            {"room": "Room 666"},
+            format="json",
+        )
+        self.assertEqual(res_attacker.status_code, status.HTTP_403_FORBIDDEN)
+
+        # 2. Legitimate assigned instructor (Dr. Anurag Sewak) edits
+        anurag_token = ExternalJWTAuthentication.generate_token(user_id="2", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {anurag_token}")
+        res_anurag = self.client.patch(
+            f"/api/timetable/entries/{entry.id}/",
+            {"room": "Room 405"},
+            format="json",
+        )
+        self.assertEqual(res_anurag.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_anurag.data["room"], "Room 405")
+        # Entry faculty_id must also be sanitized to the offering's instructor
+        self.assertEqual(res_anurag.data["faculty_id"], "6b001d4b79943f38bdcb47f2")
+
+    @patch("apps.academics.faculty_matcher._get_admin_faculty_records")
+    def test_faculty_calendar_visibility_scopes_to_assigned_courses_and_published_institutional(self, mock_get_faculty):
+        """
+        Security test: Faculty can only see published institutional events and events
+        for course offerings assigned to them.
+        Draft institutional events and other courses' events are hidden and return 403 on direct access.
+        """
+        mock_get_faculty.return_value = [
+            {
+                "_id": "6b001d4b79943f38bdcb47f2",
+                "name": "Dr. Anurag Sewak",
+                "employeeId": "FAC-CSE-201",
+                "email": "anurag@campusos.edu",
+                "username": "dr_anurag",
+                "authUserId": "2",
+            },
+            {
+                "_id": "6afc347ed9e74d0557163928",
+                "name": "Dr. Kalpana Singh",
+                "employeeId": "FAC-CSE-001",
+                "email": "kalpana@campusos.edu",
+                "username": "dr_kalpana",
+                "authUserId": "17",
+            },
+        ]
+
+        anurag_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113d",
+            faculty_id="6b001d4b79943f38bdcb47f2",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="A",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+        kalpana_offering = CourseOffering.objects.create(
+            course_id="6b002d29e5fc4d2ec633113e",
+            faculty_id="6afc347ed9e74d0557163928",
+            department_id="6afff8960979ad733ef114d0",
+            academic_term=self.term,
+            section="B",
+            capacity=30,
+            status=OfferingStatus.PUBLISHED,
+        )
+
+        # 1. Published institutional event
+        pub_inst = CalendarEvent.objects.create(
+            title="Campus Job Fair",
+            event_type=CalendarEventType.EVENT,
+            start_date=date(2026, 11, 20),
+            end_date=date(2026, 11, 21),
+            is_published=True,
+        )
+        # 2. Draft institutional event
+        draft_inst = CalendarEvent.objects.create(
+            title="Internal Staff Meeting",
+            event_type=CalendarEventType.EVENT,
+            start_date=date(2026, 11, 22),
+            end_date=date(2026, 11, 22),
+            is_published=False,
+        )
+        # 3. Anurag's course event
+        anurag_event = CalendarEvent.objects.create(
+            title="Control System Midterm Review",
+            course_offering=anurag_offering,
+            event_type=CalendarEventType.EXAM,
+            start_date=date(2026, 11, 23),
+            end_date=date(2026, 11, 23),
+            is_published=True,
+        )
+        # 4. Kalpana's course event
+        kalpana_event = CalendarEvent.objects.create(
+            title="Data Structures Coding Contest",
+            course_offering=kalpana_offering,
+            event_type=CalendarEventType.EXAM,
+            start_date=date(2026, 11, 24),
+            end_date=date(2026, 11, 24),
+            is_published=True,
+        )
+
+        anurag_token = ExternalJWTAuthentication.generate_token(user_id="2", role="faculty")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {anurag_token}")
+
+        # Faculty list query
+        res = self.client.get("/api/timetable/calendar/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        titles = [e["title"] for e in res.data]
+        self.assertIn("Campus Job Fair", titles)
+        self.assertIn("Control System Midterm Review", titles)
+        self.assertNotIn("Internal Staff Meeting", titles)
+        self.assertNotIn("Data Structures Coding Contest", titles)
+
+        # Direct access to another faculty's course event returns 403
+        res_kalpana = self.client.get(f"/api/timetable/calendar/{kalpana_event.id}/")
+        self.assertEqual(res_kalpana.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Direct access to draft institutional event returns 403
+        res_draft = self.client.get(f"/api/timetable/calendar/{draft_inst.id}/")
+        self.assertEqual(res_draft.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Admin sees all 4 events
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+        res_admin = self.client.get("/api/timetable/calendar/")
+        self.assertEqual(res_admin.status_code, status.HTTP_200_OK)
+        admin_titles = [e["title"] for e in res_admin.data]
+        self.assertIn("Campus Job Fair", admin_titles)
+        self.assertIn("Internal Staff Meeting", admin_titles)
+        self.assertIn("Control System Midterm Review", admin_titles)
+        self.assertIn("Data Structures Coding Contest", admin_titles)
 

@@ -8,6 +8,12 @@ import { lmsClient, adminClient, authClient } from "./api.js";
 export const formatApiError = (err) => {
   if (!err) return "An unknown error occurred.";
   if (!err.response) {
+    if (
+      err.code === "ECONNABORTED" ||
+      err.message?.toLowerCase().includes("timeout")
+    ) {
+      return "The server took too long to respond while waking up. Please try again.";
+    }
     return err.message || "Network error. Please verify service connectivity.";
   }
 

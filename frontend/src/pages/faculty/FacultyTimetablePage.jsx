@@ -352,12 +352,17 @@ export const FacultyTimetablePage = () => {
                 }
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600 bg-white"
               >
-                {offerings.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.course_id} (Sec {o.section}) &bull; {o.academic_term_name || `Term #${o.academic_term}`}
-                    {o.academic_term_status ? ` • ${o.academic_term_status}` : ""}
-                  </option>
-                ))}
+                {offerings.map((o) => {
+                  const courseTitle = o.course_name && (o.course_code || o.course_id)
+                    ? `${o.course_code || o.course_id} — ${o.course_name}`
+                    : (o.course_code || o.course_id);
+                  return (
+                    <option key={o.id} value={o.id}>
+                      {courseTitle} (Sec {o.section}) &bull; {o.academic_term_name || `Term #${o.academic_term}`}
+                      {o.academic_term_status ? ` • ${o.academic_term_status}` : ""}
+                    </option>
+                  );
+                })}
               </select>
             </div>
 

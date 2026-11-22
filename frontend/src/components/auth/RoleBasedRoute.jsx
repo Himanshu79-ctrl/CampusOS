@@ -17,16 +17,23 @@ export const RoleBasedRoute = ({ allowedRoles = [], children }) => {
     return <LoadingScreen message="Verifying role permissions..." />;
   }
 
-  if (!isAuthenticated || !user) {
+  if (!isAuthenticated || !user || !user.role) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   const userRole = user.role;
-  const hasPermission = allowedRoles.length === 0 || allowedRoles.includes(userRole);
+  const hasPermission =
+    Array.isArray(allowedRoles) &&
+    allowedRoles.length > 0 &&
+    allowedRoles.includes(userRole);
 
   if (!hasPermission) {
-    // Redirect unauthorized user to their own role dashboard
+    // Redirect unauthorized user to their designated role dashboard
     const redirectPath = getDashboardForRole(userRole);
+    // Guard against potential redirect loop if already on target path
+    if (location.pathname === redirectPath) {
+      return <Navigate to="/" replace />;
+    }
     return <Navigate to={redirectPath} replace />;
   }
 

@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # In-memory cache for remote faculty master records from Admin service
 _FACULTY_CACHE = {"timestamp": 0, "data": []}
 _CACHE_TTL_SECONDS = 60
+DEFAULT_ADMIN_SERVICE_TIMEOUT = 20.0
+
+
+def clear_faculty_cache():
+    """Resets the in-memory faculty cache (useful for testing and immediate cache invalidation)."""
+    global _FACULTY_CACHE
+    _FACULTY_CACHE = {"timestamp": 0, "data": []}
 
 
 def normalize_name(name: str) -> str:
@@ -38,8 +45,9 @@ def normalize_name(name: str) -> str:
 
 def _get_admin_faculty_records() -> list[dict]:
     """
-    Retrieves faculty master records from the Express Admin backend on port 5000.
+    Retrieves faculty master records from the Express Admin backend.
     Cached for 60 seconds to avoid repetitive HTTP calls.
+    Uses a 20-second timeout to accommodate cloud platform cold starts (e.g. Render).
     """
     global _FACULTY_CACHE
     now = time.time()
@@ -48,20 +56,24 @@ def _get_admin_faculty_records() -> list[dict]:
 
     base_url = getattr(settings, "ADMIN_SERVICE_URL", "http://127.0.0.1:5000").rstrip("/")
     url = f"{base_url}/api/admin/faculty"
+    timeout = getattr(settings, "ADMIN_SERVICE_TIMEOUT", DEFAULT_ADMIN_SERVICE_TIMEOUT)
     try:
         req = urllib.request.Request(
             url,
             headers={"Accept": "application/json", "User-Agent": "CampusOS-LMS-Service"},
         )
-        with urllib.request.urlopen(req, timeout=2.0) as res:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
             if res.status == 200:
                 payload = json.loads(res.read().decode())
                 records = payload.get("data", [])
-                if isinstance(records, list):
+                if isinstance(records, list) and records:
                     _FACULTY_CACHE = {"timestamp": now, "data": records}
                     return records
+                elif isinstance(records, list):
+                    logger.warning("Admin service (%s) returned an empty faculty list.", url)
+                    return []
     except Exception as exc:
-        logger.debug("Could not fetch faculty records from Admin service: %s", exc)
+        logger.warning("Could not fetch faculty records from Admin service (%s): %s", url, exc)
 
     return _FACULTY_CACHE.get("data", [])
 
@@ -126,7 +138,10 @@ def get_faculty_identifiers_for_user(user) -> set[str]:
             is_match = True
         elif username and username.lower() in ("faculty_live", "kalpana", "kalapna") and "kalpana" in fac_norm_name:
             is_match = True
-        elif user_id in ("2", "17") and "kalpana" in fac_norm_name:
+        elif user_id in ("2", "17") and (
+            (username and username.lower() in ("faculty_live", "kalpana", "kalapna"))
+            or ("kalpana" in norm_name)
+        ) and "kalpana" in fac_norm_name:
             is_match = True
 
         if is_match:

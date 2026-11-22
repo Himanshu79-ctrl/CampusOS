@@ -8,6 +8,12 @@ import { tokenStorage } from "./tokenStorage.js";
  */
 export const formatAuthError = (error) => {
   if (!error.response) {
+    if (
+      error.code === "ECONNABORTED" ||
+      error.message?.toLowerCase().includes("timeout")
+    ) {
+      return "The authentication server took too long to respond while waking up. Please try signing in again.";
+    }
     if (error.code === "ERR_NETWORK" || error.message?.includes("Network Error")) {
       return "Unable to reach CampusOS Authentication Service. Please verify that the Auth server is running and check your network.";
     }
@@ -60,15 +66,20 @@ export const authService = {
    */
   login: async ({ username, password }) => {
     try {
-      const response = await authClient.post("/api/token/", {
-        username: username.trim(),
-        password,
-      });
+      const response = await authClient.post(
+        "/api/token/",
+        {
+          username: username.trim(),
+          password,
+        },
+        { timeout: 45000 }
+      );
       return response.data;
     } catch (error) {
       const friendlyMessage = formatAuthError(error);
       const enhancedError = new Error(friendlyMessage);
       enhancedError.original = error;
+      enhancedError.code = error.code;
       enhancedError.status = error.response?.status;
       throw enhancedError;
     }
@@ -87,12 +98,16 @@ export const authService = {
         headers.Authorization = `Bearer ${token}`;
       }
 
-      const response = await authClient.get("/api/user/me/", { headers });
+      const response = await authClient.get("/api/user/me/", {
+        headers,
+        timeout: 45000,
+      });
       return response.data;
     } catch (error) {
       const friendlyMessage = formatAuthError(error);
       const enhancedError = new Error(friendlyMessage);
       enhancedError.original = error;
+      enhancedError.code = error.code;
       enhancedError.status = error.response?.status;
       throw enhancedError;
     }
@@ -110,14 +125,19 @@ export const authService = {
     }
 
     try {
-      const response = await authClient.post("/api/token/refresh/", {
-        refresh: token,
-      });
+      const response = await authClient.post(
+        "/api/token/refresh/",
+        {
+          refresh: token,
+        },
+        { timeout: 45000 }
+      );
       return response.data;
     } catch (error) {
       const friendlyMessage = formatAuthError(error);
       const enhancedError = new Error(friendlyMessage);
       enhancedError.original = error;
+      enhancedError.code = error.code;
       enhancedError.status = error.response?.status;
       throw enhancedError;
     }

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, useLocation, Navigate, Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { getDashboardForRole } from "@/types";
+import { getDashboardForRole, isRouteAllowedForRole } from "@/types";
 import {
   GraduationCap,
   Lock,
@@ -36,12 +36,17 @@ export const LoginPage = () => {
   // If already authenticated, redirect to their role dashboard or intended URL
   if (!authLoading && isAuthenticated && user) {
     const fromPath = location.state?.from?.pathname;
-    const destination = fromPath && fromPath !== "/login" ? fromPath : getDashboardForRole(user.role);
+    const destination =
+      fromPath && fromPath !== "/login" && isRouteAllowedForRole(fromPath, user.role)
+        ? fromPath
+        : getDashboardForRole(user.role);
     return <Navigate to={destination} replace />;
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return; // Prevent duplicate login submissions
+
     setErrorMessage("");
 
     // Form validation
@@ -60,14 +65,25 @@ export const LoginPage = () => {
       const loggedInUser = await login(username.trim(), password, rememberMe);
       const fromPath = location.state?.from?.pathname;
       const targetDestination =
-        fromPath && fromPath !== "/login"
+        fromPath && fromPath !== "/login" && isRouteAllowedForRole(fromPath, loggedInUser.role)
           ? fromPath
           : getDashboardForRole(loggedInUser.role);
 
       navigate(targetDestination, { replace: true });
     } catch (err) {
       const msg = err.message || "";
-      if (msg.toLowerCase().includes("invalid credentials") || msg.toLowerCase().includes("no active account")) {
+      if (
+        err.code === "ECONNABORTED" ||
+        msg.toLowerCase().includes("timeout") ||
+        msg.toLowerCase().includes("took too long")
+      ) {
+        setErrorMessage(
+          "The authentication server took too long to respond while waking up from inactivity. Please click 'Sign In' to retry."
+        );
+      } else if (
+        msg.toLowerCase().includes("invalid credentials") ||
+        msg.toLowerCase().includes("no active account")
+      ) {
         setErrorMessage("Invalid username or password. Please verify your credentials and try again.");
       } else {
         setErrorMessage(msg || "Failed to sign in. Please check your network connection and try again.");
@@ -157,6 +173,23 @@ export const LoginPage = () => {
                   <div className="flex-1">
                     <p className="font-semibold text-xs">Authentication Failed</p>
                     <p className="mt-0.5 text-xs text-rose-700 leading-relaxed">{errorMessage}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Active Connection & Server Wakeup Notice */}
+              {isSubmitting && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs flex items-center gap-2.5 animate-in fade-in"
+                >
+                  <Loader2 className="w-4 h-4 text-indigo-600 animate-spin shrink-0" />
+                  <div>
+                    <p className="font-semibold text-xs">Authenticating with CampusOS...</p>
+                    <p className="mt-0.5 text-[11px] text-indigo-700 leading-relaxed">
+                      Connecting to campus authentication service. If the server is waking up from inactivity, this may take a moment.
+                    </p>
                   </div>
                 </div>
               )}

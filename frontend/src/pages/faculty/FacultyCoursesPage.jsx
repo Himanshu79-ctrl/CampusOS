@@ -5,6 +5,7 @@ import { DataTable } from "@/components/common/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { Modal } from "@/components/common/Modal";
 import { facultyCourseApi, formatApiError } from "@/services/facultyService";
+import { courseApi, departmentApi } from "@/services/adminService";
 import {
   BookOpen,
   Users,
@@ -22,6 +23,8 @@ import {
 export const FacultyCoursesPage = () => {
   const { user } = useAuth();
   const [offerings, setOfferings] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -40,8 +43,14 @@ export const FacultyCoursesPage = () => {
     setIsLoading(true);
     setErrorMessage("");
     try {
-      const data = await facultyCourseApi.getMyOfferings(user?.id || user?.user_id);
-      setOfferings(data || []);
+      const [offeringsData, courseList, deptList] = await Promise.all([
+        facultyCourseApi.getMyOfferings(user?.id || user?.user_id),
+        courseApi.getAll().catch(() => []),
+        departmentApi.getAll().catch(() => []),
+      ]);
+      setOfferings(offeringsData || []);
+      setCourses(courseList || []);
+      setDepartments(deptList || []);
     } catch (err) {
       setErrorMessage(formatApiError(err));
     } finally {
@@ -52,6 +61,62 @@ export const FacultyCoursesPage = () => {
   useEffect(() => {
     fetchData();
   }, [user]);
+
+  // Dynamic course resolution without hardcoding
+  const resolveCourse = (courseId, offering) => {
+    if (offering?.course_name && offering?.course_code) {
+      return {
+        code: offering.course_code,
+        name: offering.course_name,
+        display: `${offering.course_code} — ${offering.course_name}`,
+      };
+    }
+
+    const matched = courses.find(
+      (c) => c.code === courseId || c._id === courseId
+    );
+    if (matched) {
+      const code = matched.code || courseId;
+      const name = matched.name || "";
+      return {
+        code,
+        name,
+        display: name ? `${code} — ${name}` : code,
+        department: matched.department,
+      };
+    }
+
+    const code = offering?.course_code || courseId || "—";
+    const name = offering?.course_name || "";
+    return {
+      code,
+      name,
+      display: name ? `${code} — ${name}` : code,
+    };
+  };
+
+  // Dynamic department name resolution without hardcoding
+  const resolveDepartmentName = (deptId, resolvedCourse, offering) => {
+    if (offering?.department_name) {
+      return offering.department_name;
+    }
+
+    if (deptId) {
+      const matched = departments.find(
+        (d) =>
+          d._id === deptId ||
+          d.code === deptId ||
+          d.code?.toLowerCase() === String(deptId).toLowerCase()
+      );
+      if (matched?.name) return matched.name;
+    }
+
+    if (resolvedCourse?.department?.name) {
+      return resolvedCourse.department.name;
+    }
+
+    return deptId || "Unassigned Department";
+  };
 
   // View Roster
   const handleOpenRoster = async (offering) => {
@@ -72,33 +137,44 @@ export const FacultyCoursesPage = () => {
   const filteredOfferings = useMemo(() => {
     return offerings.filter((o) => {
       const q = searchQuery.toLowerCase();
+      const courseInfo = resolveCourse(o.course_id, o);
+      const deptName = resolveDepartmentName(o.department_id, courseInfo, o);
       const matchesSearch =
         !q ||
         o.course_id?.toLowerCase().includes(q) ||
+        courseInfo.code?.toLowerCase().includes(q) ||
+        courseInfo.name?.toLowerCase().includes(q) ||
+        deptName?.toLowerCase().includes(q) ||
         o.academic_term_name?.toLowerCase().includes(q) ||
         o.section?.toLowerCase().includes(q);
 
       const matchesStatus = statusFilter === "all" || o.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [offerings, searchQuery, statusFilter]);
+  }, [offerings, courses, departments, searchQuery, statusFilter]);
 
   const columns = [
     {
       header: "Course & Section",
-      accessor: (row) => (
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="font-mono font-bold text-slate-900 text-sm">{row.course_id}</span>
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
-              Sec {row.section}
+      accessor: (row) => {
+        const courseInfo = resolveCourse(row.course_id, row);
+        const deptName = resolveDepartmentName(row.department_id, courseInfo, row);
+        return (
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-bold text-slate-900 text-sm">
+                {courseInfo.display}
+              </span>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Sec {row.section}
+              </span>
+            </div>
+            <span className="text-xs text-slate-500 block mt-0.5">
+              Dept: <strong className="text-slate-700 font-medium">{deptName}</strong>
             </span>
           </div>
-          <span className="text-xs text-slate-500 block mt-0.5">
-            Dept: <strong className="font-mono text-slate-700">{row.department_id}</strong>
-          </span>
-        </div>
-      ),
+        );
+      },
     },
     {
       header: "Academic Term",
@@ -267,7 +343,7 @@ export const FacultyCoursesPage = () => {
             setRosterOffering(null);
             setRosterData(null);
           }}
-          title={`Enrolled Students Roster: ${rosterOffering.course_id}`}
+          title={`Enrolled Students Roster: ${resolveCourse(rosterOffering.course_id, rosterOffering).display}`}
           subtitle={`Section ${rosterOffering.section} • ${rosterOffering.academic_term_name || "Active Term"}`}
         >
           <div className="space-y-4">
@@ -336,53 +412,61 @@ export const FacultyCoursesPage = () => {
       )}
 
       {/* Modal: Offering Details */}
-      {selectedOffering && (
-        <Modal
-          isOpen={Boolean(selectedOffering)}
-          onClose={() => setSelectedOffering(null)}
-          title={`Course Details: ${selectedOffering.course_id}`}
-          subtitle={`Offering ID #${selectedOffering.id}`}
-        >
-          <div className="space-y-4 text-xs">
-            <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
-              <div>
-                <span className="text-slate-400 block text-[11px]">Course Code</span>
-                <span className="font-bold text-slate-800 text-sm font-mono">{selectedOffering.course_id}</span>
+      {selectedOffering && (() => {
+        const courseInfo = resolveCourse(selectedOffering.course_id, selectedOffering);
+        const deptName = resolveDepartmentName(selectedOffering.department_id, courseInfo, selectedOffering);
+        return (
+          <Modal
+            isOpen={Boolean(selectedOffering)}
+            onClose={() => setSelectedOffering(null)}
+            title={`Course Details: ${courseInfo.display}`}
+            subtitle={`Offering ID #${selectedOffering.id}`}
+          >
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Course Code</span>
+                  <span className="font-bold text-slate-800 text-sm font-mono">{courseInfo.code}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Course Name</span>
+                  <span className="font-bold text-slate-800 text-sm">{courseInfo.name || "—"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Department</span>
+                  <span className="font-medium text-slate-800">{deptName}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Section</span>
+                  <span className="font-bold text-slate-800 text-sm font-mono">{selectedOffering.section}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Academic Term</span>
+                  <span className="font-medium text-slate-800">{selectedOffering.academic_term_name || selectedOffering.academic_term}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Capacity</span>
+                  <span className="font-medium text-slate-800">{selectedOffering.capacity} students</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">Enrolled Students</span>
+                  <span className="font-bold text-indigo-600">{selectedOffering.enrolled_count ?? 0}</span>
+                </div>
               </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Section</span>
-                <span className="font-bold text-slate-800 text-sm font-mono">{selectedOffering.section}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Department</span>
-                <span className="font-medium text-slate-800">{selectedOffering.department_id}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Academic Term</span>
-                <span className="font-medium text-slate-800">{selectedOffering.academic_term_name || selectedOffering.academic_term}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Capacity</span>
-                <span className="font-medium text-slate-800">{selectedOffering.capacity} students</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[11px]">Enrolled Students</span>
-                <span className="font-bold text-indigo-600">{selectedOffering.enrolled_count ?? 0}</span>
-              </div>
-            </div>
 
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setSelectedOffering(null)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
-              >
-                Close
-              </button>
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedOffering(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
-          </div>
-        </Modal>
-      )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 };
